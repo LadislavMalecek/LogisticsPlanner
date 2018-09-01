@@ -1,6 +1,9 @@
 from world_descriptions import Package, City, World, WorldActionsPrices
 from world_loader import WorldLoader
 
+# import queue
+import heapq
+
 # World solver uses simple search algorithms to try and find sequence of steps which will lead to good solution
 # The algorithm has three phases (to split the computing requirement at bigger instances)
 # 1. solve each city using only trucks, if the package's destination within the city then deliver it, else deliver it to the airport
@@ -11,11 +14,76 @@ from world_loader import WorldLoader
 # and phases 1 and 3 are easily parrallelizable
 
 
+class WorldSolverStatesMem:
+    class PricePriority:
+        def __init__(self, price, seq_num):
+            self.price = price
+            self.seq_num = seq_num
+
+        def __lt__(self, other):
+            if self.price is not other.price:
+                return self.price < other.price
+            else:
+                return self.seq_num < other.seq_num
+
+    def __init__(self):
+        self.solver_states_by_id = {}
+        # no need for priority heap with decrease key, bcs all hops between places are in constant cost -> triangle inequality holds
+        # self.solver_states_by_price_queue = queue.PriorityQueue()
+        self.solver_states_by_price_queue = []
+
+        # used to add to the real price to make it unique as a key to the priority queue
+        # - then I dont have to implement comparation btw SolverStates when the prices are the same
+        self.seq_num = 0
+
+    def get_next_unique(self):
+        self.seq_num += 1
+        return self.seq_num
+
+    def add(self, solver_state):
+        state_id = solver_state.unique_solver_state_id
+        already_seen: SolverState = self.solver_states_by_id.get(state_id)
+        if already_seen is None:
+            self.solver_states_by_id[solver_state.unique_solver_state_id] = solver_state
+
+            queue_key = self.PricePriority(solver_state.price, self.get_next_unique())
+
+            # self.solver_states_by_price_queue.put((solver_state.price, solver_state))
+            heapq.heappush(self.solver_states_by_price_queue, (queue_key, solver_state))
+            return True
+        elif already_seen.price > solver_state.price:
+            raise AssertionError(
+                "This should have not happend! Need to use decreasable PQ, premise not valid.")
+        else:
+            # Item already added, and the already added items price is less as predicted
+            return False
+
+    def pop_min_by_price(self):
+        # if self.solver_states_by_price_queue.empty():
+        #     return None
+        # return self.solver_states_by_price_queue.get()[1]
+
+        if self.is_empty():
+            return None
+        return heapq.heappop(self.solver_states_by_price_queue)[1]
+
+    def is_empty(self):
+        return not self.solver_states_by_price_queue
+
+    def get_all_states_by_id_dic(self):
+        return self.solver_states_by_id
+
+
 class WorldSolver:
     def __init__(self, world: World):
+        self.output = []
         self.world = world
         self.current_packages_places = {
-            package.id: package.origin_place_id for package in self.world.packages}
+            package.id: package.origin_place_id for package in self.world.packages }
+
+        self.current_places_states = {}
+        self.current_trucks_states = {}
+        self.current_planes_states = {}
 
     def init_city_phase1(self, city_id):
         first_solver_state = SolverState(
@@ -37,10 +105,98 @@ class WorldSolver:
 
         return first_solver_state
 
-    # This phase will
-    def solve_city_phase1(self, city_id):
-        action_prices = WorldActionsPrices(1)
-        pass
+    def init_world_phase2(self):
+        first_solver_state = SolverState(
+            self.world, WorldActionsPrices(2), 2, None)
+
+        for plane_id in range(self.world.num_planes):
+
+            new_transporter_state = TransporterState(
+                plane_id, self.world.planes_starting_places_ids[plane_id], [])
+            first_solver_state.transports_states[new_transporter_state.id] = new_transporter_state
+
+        for place_id in [city.airport_place_id for city in self.world.cities]:
+            place_state_from_phase1 = self.current_places_states[place_id]
+            first_solver_state.places_states[place_state_from_phase1.id] = place_state_from_phase1
+
+        first_solver_state.get_unique_id()
+
+        return first_solver_state
+
+    def init_city_phase3(self, city_id):
+        first_solver_state = SolverState(
+            self.world, WorldActionsPrices(3), 3, city_id)
+        city = self.world.cities[city_id]
+        for truck_id in city.trucks_ids:
+            truck_state_from_phase1 = self.current_trucks_states[truck_id]
+            first_solver_state.transports_states[truck_state_from_phase1.id] = truck_state_from_phase1
+
+        for place_id in city.places_ids:
+            place_state_from_phase2 = self.current_places_states[place_id]
+            first_solver_state.places_states[place_state_from_phase2.id] = place_state_from_phase2
+
+        first_solver_state.get_unique_id()
+
+        return first_solver_state
+
+    def solve_phase1(self):
+        for city in self.world.cities:
+            first_state = self.init_city_phase1(city.id)
+            self.solve_phase(1, first_state)
+        print("% phase1 done")
+
+    def solve_phase2(self):
+        first_state = self.init_world_phase2()
+        self.solve_phase(2, first_state)
+        print("% phase2 done")
+
+    def solve_phase3(self):
+        for city in self.world.cities:
+            first_state = self.init_city_phase3(city.id)
+            self.solve_phase(3, first_state)
+        print("% phase3 done")
+    
+
+    def solve_phase(self, phase_number, first_state):
+        mem = WorldSolverStatesMem()
+
+        if first_state.is_final_for_phase(phase_number):
+            self.update_states(first_state)
+            print("% No search needed - all done")
+            return
+        mem.add(first_state)
+
+        while not mem.is_empty():
+            lowest_price_state = mem.pop_min_by_price()
+            newStates = lowest_price_state.generate_all_neighbours()
+            for state in newStates:
+                if state.is_final_for_phase(phase_number):
+                    print("% Found with price: " + str(state.price))
+                    self.get_output(state, mem.get_all_states_by_id_dic())
+                    self.update_states(state)
+                    return
+                mem.add(state)
+        print("% Solution not found")
+
+    def update_states(self, state):
+        for transport_state in state.transports_states.values():
+            if state.phase_number is 2:
+                self.current_planes_states[transport_state.id] = transport_state
+            else:
+                self.current_trucks_states[transport_state.id] = transport_state
+        
+        for place_state in state.places_states.values():
+            self.current_places_states[place_state.id] = place_state
+
+
+    def get_output(self, last_state, unique_state_id_to_state):
+        actions = []
+        current_state = last_state
+        while current_state is not None and current_state.action_from_previous is not None:
+            actions.append(current_state.action_from_previous)
+            current_state = unique_state_id_to_state.get(current_state.previous_unique_solver_state_id)
+        actions.reverse()
+        [print(action) for action in actions]
 
 
 class TransporterState:
@@ -50,7 +206,8 @@ class TransporterState:
         self.current_packages_ids = set(current_packages_ids)
 
     def get_id_string(self):
-        packages_ids = '-'.join(sorted([str(i) for i in self.current_packages_ids]))
+        packages_ids = '-'.join(sorted([str(i)
+                                        for i in self.current_packages_ids]))
         return f"(t{self.id},{self.current_place_id}:{packages_ids})"
 
     def get_copy(self):
@@ -59,7 +216,7 @@ class TransporterState:
         return new_transport_state
 
     def is_empty(self):
-        return len(self.current_packages_ids)
+        return len(self.current_packages_ids) is 0
 
 
 class PlaceState:
@@ -69,7 +226,8 @@ class PlaceState:
         self.current_packages_ids = set(current_packages_ids)
 
     def get_id_string(self):
-        packages_ids = '-'.join(sorted([str(i) for i in self.current_packages_ids]))
+        packages_ids = '-'.join(sorted([str(i)
+                                        for i in self.current_packages_ids]))
         return f"(p{self.id}:{packages_ids})"
 
     def get_copy(self):
@@ -88,6 +246,7 @@ class SolverState:
         # used tp quickly search through already visited states
         self.unique_solver_state_id = None
         self.previous_unique_solver_state_id = None
+        self.action_from_previous = None
 
         self.price = 0
 
@@ -125,9 +284,10 @@ class SolverState:
         new_copy.unique_solver_state_id = self.unique_solver_state_id
         new_copy.previous_unique_solver_state_id = self.unique_solver_state_id
         return new_copy
-
+    
     def is_final_for_phase(self, phase_number: int):
-        # possible optimalization would be to generate the final state once and check againts the its unique_state_id
+        # possible optimalization would be to generate the final state once and check
+        # againts the its unique_state_id
         all_transports_empty = all([transport.is_empty()
                                     for transport in self.transports_states.values()])
         if not all_transports_empty:
@@ -151,7 +311,8 @@ class SolverState:
             for place in self.places_states.values():
                 if place.id == transport.current_place_id:
                     continue
-                neighbours.append(self.get_neighbour_move(transport_id, place.id))
+                neighbours.append(
+                    self.get_neighbour_move(transport_id, place.id))
         return neighbours
 
     def get_neighbour_move(self, transport_id, destination_place_id):
@@ -159,6 +320,7 @@ class SolverState:
         new.transports_states[transport_id].current_place_id = destination_place_id
         new.price += self.action_prices.get_move_price()
         new.get_unique_id()
+        new.action_from_previous = f"{self.get_action_name('move')} {transport_id} {destination_place_id}"
         return new
 
     def get_unload_neigbours(self):
@@ -171,11 +333,12 @@ class SolverState:
 
     def get_neighbour_unload(self, transport_id, package_id, place_id):
         new: SolverState = self.get_copy()
-        new.transports_states[transport_id].current_packages_ids.pop(
+        new.transports_states[transport_id].current_packages_ids.remove(
             package_id)
         new.places_states[place_id].current_packages_ids.add(package_id)
-        new.price += self.action_prices.get_unload_price
+        new.price += self.action_prices.get_unload_price()
         new.get_unique_id()
+        new.action_from_previous = f"{self.get_action_name('unload')} {transport_id} {package_id}"
         return new
 
     def get_load_neigbours(self):
@@ -198,7 +361,24 @@ class SolverState:
         new: SolverState = self.get_copy()
         new.transports_states[transport_id].current_packages_ids.add(
             package_id)
-        new.places_states[place_id].current_packages_ids.pop(package_id)
-        new.price += self.action_prices.get_load_price
+        new.places_states[place_id].current_packages_ids.remove(package_id)
+        new.price += self.action_prices.get_load_price()
         new.get_unique_id()
+        new.action_from_previous = f"{self.get_action_name('load')} {transport_id} {package_id}"
         return new
+
+    def get_action_name(self, type):
+        if self.phase_number is 2:
+            if type is "load":
+                return "pickUp"
+            elif type is "unload":
+                return "dropOff"
+            elif type is "move":
+                return "fly" 
+        else:
+            if type is "load":
+                return "load"
+            elif type is "unload":
+                return "unload"
+            elif type is "move":
+                return "drive"

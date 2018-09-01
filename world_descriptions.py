@@ -44,7 +44,7 @@ class City:
 class World:
     def __init__(self):
         self.packages = []
-        self.num_planes = []
+        self.num_planes = 0
         self.planes_starting_places_ids = {}
         self.trucks_starting_places_ids = {}
         self.cities = []

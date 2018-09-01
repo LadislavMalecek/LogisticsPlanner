@@ -40,6 +40,7 @@ class WorldLoader:
         num_of_planes = int(self.read_next_valid(file))
         for plane_id in range(num_of_planes):
             planes_place = int(self.read_next_valid(file))
+            self.world.num_planes = planes_place
             self.create_plane(planes_place, plane_id)
 
         # loading packages

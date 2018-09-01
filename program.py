@@ -4,14 +4,10 @@ from world_solver import WorldSolver
 
 new_world = World()
 WorldLoader(new_world).load_world("/home/alby/pythonai1/test_input.txt")
-print("Loading done!")
+print("% Loading done!")
 
 solver = WorldSolver(new_world)
-init_state_0 = solver.init_city_phase1(0)
-states0 = init_state_0.generate_all_neighbours()
+solver.solve_phase1()
+solver.solve_phase2()
+solver.solve_phase3()
 
-
-init_state_1 = solver.init_city_phase1(1)
-states1 = init_state_1.generate_all_neighbours()
-
-print("States initialized")
