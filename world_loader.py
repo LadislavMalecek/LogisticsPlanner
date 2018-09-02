@@ -38,9 +38,9 @@ class WorldLoader:
 
         # loading airplanes
         num_of_planes = int(self.read_next_valid(file))
+        self.world.num_planes = num_of_planes
         for plane_id in range(num_of_planes):
             planes_place = int(self.read_next_valid(file))
-            self.world.num_planes = planes_place
             self.create_plane(planes_place, plane_id)
 
         # loading packages
@@ -81,5 +81,8 @@ class WorldLoader:
             new_package.destination_place_phase1 = self.world.cities[origin_city_id].airport_place_id
             new_package.destination_place_phase2 = self.world.cities[
                 destination_city_id].airport_place_id
+        else:
+            new_package.destination_place_phase1 = destination_place_id
+            new_package.destination_place_phase2 = destination_place_id
 
         self.world.packages.append(new_package)
