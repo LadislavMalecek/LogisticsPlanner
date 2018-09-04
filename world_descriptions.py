@@ -49,6 +49,9 @@ class World:
         self.trucks_starting_places_ids = {}
         self.cities = []
 
+        self.max_load_plane = 30
+        self.max_load_truck = 4
+
         self.places_to_city_ids = {}
 
     # def load(self, file_path: str):

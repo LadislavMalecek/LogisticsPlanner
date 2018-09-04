@@ -1,6 +1,7 @@
 from world_descriptions import Package, City, World, WorldActionsPrices
 from world_loader import WorldLoader
 from world_states import SolverState, TransporterState, PlaceState
+from priority_queue import PriorityQueue
 
 # import queue
 import heapq
@@ -14,65 +15,46 @@ import heapq
 # possitive thing is that we wont be needing the trucks in the second thing - therefore they will stay at the airports ready to be delivering
 # and phases 1 and 3 are easily parrallelizable
 
-
-class WorldSolverStatesMem:
-    class PricePriority:
-        def __init__(self, price, seq_num):
-            self.price = price
-            self.seq_num = seq_num
-
-        def __lt__(self, other):
-            if self.price is not other.price:
-                return self.price < other.price
-            else:
-                return self.seq_num < other.seq_num
-
+class WorldSolverStatesSearch:
     def __init__(self):
-        self.solver_states_by_id = {}
-        # no need for priority heap with decrease key, bcs all hops between places are in constant cost -> triangle inequality holds
-        # self.solver_states_by_price_queue = queue.PriorityQueue()
-        self.solver_states_by_price_queue = []
+        self.priority_queue = PriorityQueue()
+        self.closed_set = set()
+        self.debuging_list = []
 
-        # used to add to the real price to make it unique as a key to the priority queue
-        # - then I dont have to implement comparation btw SolverStates when the prices are the same
-        self.seq_num = 0
+    def search(self, start_state):
+        self.priority_queue.add(start_state, start_state.price + start_state.get_heuristic_estimate())
+        while not self.priority_queue.is_empty():
+            current = self.priority_queue.pop()
+            # print(f"retrieving: {current.price + current.heuristic_estimate}")
+            # print(f"adding - g:{int(current.price)} - h:{int(current.heuristic_estimate)} - f: {int(current.price + current.heuristic_estimate)}")
+            if current.is_final():
+                return current
 
-    def get_next_unique(self):
-        self.seq_num += 1
-        return self.seq_num
+            self.closed_set.add(current)
 
-    def add(self, solver_state):
-        state_id = solver_state.unique_solver_state_id
-        already_seen: SolverState = self.solver_states_by_id.get(state_id)
-        if already_seen is None:
-            self.solver_states_by_id[solver_state.unique_solver_state_id] = solver_state
+            for neighbour in current.generate_all_neighbours():
+                if neighbour in self.closed_set:
+                    continue
+                self.debuging_list.append(neighbour)
+                heuristics = neighbour.get_heuristic_estimate()
+                # if(heuristics + neighbour.price) < (current.heuristic_estimate + current.price):
+                #     print("wtf")
 
-            queue_key = self.PricePriority(solver_state.price, self.get_next_unique())
+                # print(f"adding - g:{neighbour.price} - h:{heuristics} - f: {neighbour.price + heuristics}")
+                self.priority_queue.add(neighbour, neighbour.price + heuristics)
 
-            # self.solver_states_by_price_queue.put((solver_state.price, solver_state))
-            heapq.heappush(self.solver_states_by_price_queue, (queue_key, solver_state))
-            return True
-        elif already_seen.price > solver_state.price:
-            raise AssertionError(
-                "This should have not happend! Need to use decreasable PQ, premise not valid.")
-        else:
-            # Item already added, and the already added items price is less as predicted
-            return False
+    def get_path(self, final_state):
+        id_to_states = { state.unique_solver_state_id:state for state in list(self.closed_set) }
+        states = [final_state]
 
-    def pop_min_by_price(self):
-        # if self.solver_states_by_price_queue.empty():
-        #     return None
-        # return self.solver_states_by_price_queue.get()[1]
-
-        if self.is_empty():
-            return None
-        return heapq.heappop(self.solver_states_by_price_queue)[1]
-
-    def is_empty(self):
-        return not self.solver_states_by_price_queue
-
-    def get_all_states_by_id_dic(self):
-        return self.solver_states_by_id
+        previous_id = states[-1].previous_unique_solver_state_id
+        while previous_id is not None:
+            state = id_to_states[previous_id]
+            states.append(state)
+            previous_id = states[-1].previous_unique_solver_state_id
+        
+        states.reverse()
+        return states
 
 
 class WorldSolver:
@@ -159,25 +141,22 @@ class WorldSolver:
     
 
     def solve_phase(self, phase_number, first_state):
-        mem = WorldSolverStatesMem()
+        searcher = WorldSolverStatesSearch()
 
-        if first_state.is_final_for_phase(phase_number):
-            self.update_states(first_state)
-            print("% No search needed - all done")
+        final_state = searcher.search(first_state)
+        if final_state is None:
+            print("%No solution found")
             return
-        mem.add(first_state)
 
-        while not mem.is_empty():
-            lowest_price_state = mem.pop_min_by_price()
-            newStates = lowest_price_state.generate_all_neighbours()
-            for state in newStates:
-                if state.is_final_for_phase(phase_number):
-                    print("% Found with price: " + str(state.price))
-                    self.get_output(state, mem.get_all_states_by_id_dic())
-                    self.update_states(state)
-                    return
-                mem.add(state)
-        print("% Solution not found")
+        self.update_states(final_state)
+        
+        if final_state == first_state:
+            print("%No search needed")
+            return
+
+        path = searcher.get_path(final_state)
+        self.get_output(path)
+
 
     def update_states(self, state):
         for transport_state in state.transports_states.values():
@@ -190,11 +169,5 @@ class WorldSolver:
             self.current_places_states[place_state.id] = place_state
 
 
-    def get_output(self, last_state, unique_state_id_to_state):
-        actions = []
-        current_state = last_state
-        while current_state is not None and current_state.action_from_previous is not None:
-            actions.append(current_state.action_from_previous)
-            current_state = unique_state_id_to_state.get(current_state.previous_unique_solver_state_id)
-        actions.reverse()
-        [print(action) for action in actions]
+    def get_output(self, path):
+        [print(state.action_from_previous) for state in path if state.action_from_previous is not None]
